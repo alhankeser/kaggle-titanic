@@ -201,26 +201,89 @@ class Clean:
 
 class Engineer:
 
-    # def get_title(cls, x):
-    #     regexp = re.compile(r'Capt\.|Col\.|Don\.|Dona\.|Dr\.|Jonkheer\.|Lady\.|Major\.|Master\.|Miss\.|Mlle\.|Mme\.|Mr\.|Mrs\.|Ms\.|Rev\.|Sir\.|the Countess\.')
-    #     result = regexp.search(x)
-    #     mrMen = ['Rev.', 'Don.', 'Sir.', 'Jonkheer.', 'Capt.', 'Col.', 'Major.']
-    #     missTitles = ['Ms.', 'Mlle.']
-    #     mrsTitles = ['Mme.', 'Lady.', 'the Countess.', 'Dona.']
-    #     if result:
-    #         title = result.group()
-    #         if title in missTitles:
-    #             return 'Miss.'
-    #         if (title in mrsTitles) or (title == 'Dr.') and (row['Sex'] == 'female'):
-    #             return 'Mrs.'
-    #         if (title in mrMen) or (title == 'Dr.'):
-    #             return 'Mr.'
-    #         return title
-    #     return False
+    def get_age_groups(cls, steps):
+        max_age = 45
+        group_count = np.arange(0, max_age, steps)
+        age_groups = pd.DataFrame(columns=['AgeGroup', 'Range'])
+        for age_group_boundary in group_count:
+            start = age_group_boundary
+            stop = age_group_boundary + steps
+            age_groups = age_groups.append({
+                'AgeGroup': str(start) + '_' + str(stop),
+                'Range': [start, stop]}, ignore_index=True)
+        age_groups = age_groups.append({
+            'AgeGroup': str(max_age) + '_200',
+            'Range': [max_age, 200]}, ignore_index=True)
+        return age_groups
+
+    def group_by_age(cls, row, age_groups):
+        age = row['Age']
+        for age_group in age_groups.iterrows():
+            if (age >= age_group[1]['Range'][0]) and\
+             (age < age_group[1]['Range'][1]):
+                return age_group[1]['AgeGroup']
+
+    def age_group(cls, df, steps):
+        age_groups = cls.get_age_groups(steps)
+        df['AgeGroup'] = df.apply(lambda x: cls.group_by_age(x, age_groups),
+                                  axis=1)
+        return df
+
+    def title_to_age(cls, row, df):
+        if pd.isnull(row['Age']):
+            age = df[(df['Title'] == row['Title'])]['Age'].median()
+            if not math.isnan(age):
+                return int(age)
+        return row['Age']
+
+    def impute_age(cls, df):
+        df['Age'] = df.apply(lambda x: cls.title_to_age(x, df), axis=1)
+        return df
+
+    def get_family_size(cls, row):
+        family_size = row['SibSp'] + row['Parch'] + 1
+        if family_size == 1:
+            return 'fam_none'
+        if (family_size < 5) & (family_size > 1):
+            return 'fam_small'
+        if family_size > 4:
+            return 'fam_large'
+    
+    def family(cls, df):
+        df['FamilySize'] = df.apply(lambda x: cls.get_family_size(x), axis=1)
+        return df
+
+    def get_title(cls, row):
+        regexp = re.compile(r'Capt\.|Col\.|Don\.|Dona\.|Dr\.|Jonkheer\.\
+        |                   Lady\.|Major\.|Master\.|Miss\.|Mlle\.|Mme\.\
+                            |Mr\.|Mrs\.|Ms\.|Rev\.|Sir\.|the Countess\.')
+        result = regexp.search(row['Name'])
+        mrMen = ['Rev.', 'Don.', 'Sir.', 'Jonkheer.',
+                 'Capt.', 'Col.', 'Major.']
+        missTitles = ['Ms.', 'Mlle.']
+        mrsTitles = ['Mme.', 'Lady.', 'the Countess.', 'Dona.']
+        if result:
+            title = result.group()
+            if title in missTitles:
+                return 'Miss.'
+            if (title in mrsTitles) or ((title == 'Dr.') and
+               (row['Sex'] == 'female')):
+                return 'Mrs.'
+            if (title in mrMen) or (title == 'Dr.'):
+                return 'Mr.'
+            return title
+        return False
+
+    def title(cls, df):
+        df['Title'] = df.apply(lambda x: cls.get_title(x), axis=1)
+        return df
 
     def sum_features(cls, df, col_sum):
         for col_set in col_sum:
             f_name = '__'.join(col_set[:])
+            for col in col_set:
+                if col == 'Pclass':
+                    df[col] = df[col].apply(lambda x: str(x))
             df[f_name] = df[[*col_set]].sum(axis=1)
             df.drop(col_set, axis=1, inplace=True)
         return df
@@ -401,13 +464,16 @@ def run(d, model, parameters):
     mutate = d.mutate
     # print(d.get_df('train').head())
 
-    mutate(d.fill_na)
-
+    mutate(d.title)
+    mutate(d.impute_age)
+    mutate(d.age_group, 15)
+    mutate(d.family)
     # Feature Engineering
-    # mutate(d.sum_features, d.col_sum)
+    mutate(d.sum_features, d.col_sum)
     mutate(d.drop_ignore)
-    mutate(d.encode_categorical, ['Pclass', 'Sex', 'Embarked'],
-           'one_hot')
+    mutate(d.fill_na)
+    mutate(d.encode_categorical, ['Sex', 'FamilySize', 'Title', 'Pclass',
+                                  'AgeGroup'], 'one_hot')
 
     # mutate(d.fill_na)
     model = d.grid_search(model, parameters, 'accuracy')
@@ -421,9 +487,10 @@ def run(d, model, parameters):
 
 model = LogisticRegression
 parameters = {}
-cols_to_ignore = ['PassengerId', 'SibSp', 'Name', 'Parch', 'Ticket', 'Cabin']
+cols_to_ignore = ['PassengerId', 'SibSp', 'Name', 'Parch',
+                  'Ticket', 'Cabin', 'Age', 'Embarked', 'Fare']
 col_sum = [
-    # ['LotShape', 'LandContour'],
+    # ['Title', 'Pclass'],
 ]
 
 d = Data('./input/train.csv',
