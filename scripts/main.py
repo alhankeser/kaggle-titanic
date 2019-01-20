@@ -7,8 +7,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import accuracy_score
 import scipy.stats as stats
 import re
 import math
@@ -33,7 +34,7 @@ class Explore:
         return cls.get_dtype(exclude_type=['float64', 'int', 'float32'])
 
     def get_numeric(cls):
-        return cls.get_dtype(exclude_type=['object'])
+        return cls.get_dtype(exclude_type=['object', 'category'])
 
     def get_categorical(cls, as_df=False):
         return cls.get_dtype(include_type=['object'])
@@ -106,10 +107,10 @@ class Clean:
             order['val'] = df[cat_feat].unique()
             order.index = order.val
             order.drop(columns=['val'], inplace=True)
-            order[target + '_median'] = cat_feat_target[[target]].median()
+            order[target + '_mean'] = cat_feat_target[[target]].median()
             order['feature'] = cat_feat
             order['encoded_name'] = cat_feat_encoded_name
-            order = order.sort_values(target + '_median')
+            order = order.sort_values(target + '_mean')
             order['num_val'] = range(1, len(order)+1)
             result = result.append(order)
         result.reset_index(inplace=True)
@@ -121,12 +122,12 @@ class Clean:
         for feature in scaled['feature'].unique():
             values = scaled[scaled['feature'] == feature]['num_val'].values
             medians = scaled[
-                    scaled['feature'] == feature][target + '_median'].values
+                    scaled['feature'] == feature][target + '_mean'].values
             for median in medians:
                 scaled_value = ((values.min() + 1) *
                                 (median / medians.min()))-1
                 scaled.loc[(scaled['feature'] == feature) &
-                           (scaled[target + '_median'] == median),
+                           (scaled[target + '_mean'] == median),
                            'num_val'] = scaled_value
         return scaled
 
@@ -146,7 +147,7 @@ class Clean:
     def encode_categorical(cls, df, cols=[], method='one_hot'):
         if len(cols) == 0:
             cols = cls.get_categorical().columns.values
-        if method == 'target_median':
+        if method == 'target_mean':
             encoding_lookup = cls.get_encoding_lookup(cols)
             encoding_lookup = cls.get_scaled_categorical(encoding_lookup)
             df = cls.encode_with_lookup(df, encoding_lookup)
@@ -201,6 +202,10 @@ class Clean:
 
 class Engineer:
 
+    def pclass(cls, df):
+        df['Pclass'] = df['Pclass'].apply(lambda x: str('_' + str(x)))
+        return df
+
     def get_age_groups(cls, steps):
         max_age = 45
         group_count = np.arange(0, max_age, steps)
@@ -248,7 +253,7 @@ class Engineer:
             return 'fam_small'
         if family_size > 4:
             return 'fam_large'
-    
+
     def family(cls, df):
         df['FamilySize'] = df.apply(lambda x: cls.get_family_size(x), axis=1)
         return df
@@ -281,10 +286,23 @@ class Engineer:
     def sum_features(cls, df, col_sum):
         for col_set in col_sum:
             f_name = '__'.join(col_set[:])
-            for col in col_set:
-                if col == 'Pclass':
-                    df[col] = df[col].apply(lambda x: str(x))
             df[f_name] = df[[*col_set]].sum(axis=1)
+            df.drop(col_set, axis=1, inplace=True)
+        return df
+
+    def combine_features(cls, row, col_set):
+        result = ''
+        for col in col_set:
+            if result != '':
+                result += '_'
+            result += str(row[col])
+        return result
+
+    def combine(cls, df, col_sets):
+        for col_set in col_sets:
+            f_name = '__'.join(col_set[:])
+            df[f_name] = df.apply(lambda x: cls.combine_features(x, col_set),
+                                  axis=1)
             df.drop(col_set, axis=1, inplace=True)
         return df
 
@@ -320,8 +338,44 @@ class Model:
             train = cls.get_df('train')
         X = train.drop(columns=[cls.target_col])
         y = train[cls.target_col]
-        model = GridSearchCV(model(), parameters, cv=10,
-                             scoring=scoring)
+        # model = GridSearchCV(model(), parameters, cv=10,
+        #                      scoring=scoring)
+
+        model = model()
+        model.fit(X, y)
+        X_predictions = model.predict(X)
+        print(accuracy_score(y, X_predictions))
+        return model
+
+    def cross_validate(cls, model, parameters, x_val_times=10):
+        train, test = cls.get_dfs()
+        # TODO: check if there are lists in parameters to run gridsearch
+        if len(train.drop(cls.target_col,
+               axis=1).columns) != len(test.columns):
+            cls.mutate(cls.fix_shape)
+            train = cls.get_df('train')
+        scores = np.array([])
+        while x_val_times > 0:
+            train = cls.get_df('train')
+            X = train.drop(columns=[cls.target_col])
+            y = train[cls.target_col]
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.3,
+                random_state=(x_val_times ** 2))
+            cv_model = model(**parameters)
+            cv_model.fit(X_train, y_train)
+            X_predictions = cv_model.predict(X_test)
+            score = accuracy_score(y_test, X_predictions)
+            scores = np.append(scores, score)
+            x_val_times -= 1
+        score = np.round(scores.mean(), decimals=5)
+        return score
+
+    def fit(cls, model, parameters):
+        train = cls.get_df('train')
+        X = train.drop(columns=[cls.target_col])
+        y = train[cls.target_col]
+        model = model(**parameters)
         model.fit(X, y)
         return model
 
@@ -330,12 +384,15 @@ class Model:
         predictions = model.predict(test)
         return predictions
 
-    def save_predictions(cls, predictions):
+    def save_predictions(cls, predictions, score=0):
         now = str(time.time()).split('.')[0]
         df = cls.get_df('test', False, True)
         target = cls.target_col
         df[target] = predictions
-        df[[df.columns[0], target]].to_csv('submit-' + now + '.csv',
+        # df[target] = df[target].apply(lambda x: np.expm1(x))
+        df[[df.columns[0], target]].to_csv('submit__' +
+                                           str(int(score * 100000))
+                                           + '__' + now + '.csv',
                                            index=False)
 
 
@@ -462,33 +519,33 @@ class Data(Explore, Clean, Engineer, Model):
 
 def run(d, model, parameters):
     mutate = d.mutate
-    # print(d.get_df('train').head())
-
     mutate(d.title)
     mutate(d.impute_age)
     mutate(d.age_group, 15)
     mutate(d.family)
-    # Feature Engineering
-    mutate(d.sum_features, d.col_sum)
+    mutate(d.pclass)
+    # mutate(d.sum_features, d.col_sum)
+    mutate(d.combine, d.col_sum)
+    # print(d.get_df('train').head())
+    mutate(d.encode_categorical, ['Title', 'Pclass', 'FamilySize', 'AgeGroup'])
     mutate(d.drop_ignore)
     mutate(d.fill_na)
-    mutate(d.encode_categorical, ['Sex', 'FamilySize', 'Title', 'Pclass',
-                                  'AgeGroup'], 'one_hot')
-
-    # mutate(d.fill_na)
-    model = d.grid_search(model, parameters, 'accuracy')
-    print('train', d.get_df('train').drop(d.target_col, axis=1).columns.values)
-    print('test', d.get_df('test').columns.values)
-    print(round(model.cv_results_['mean_test_score'][0], 7))
+    score = d.cross_validate(model, parameters)
+    print(score)
+    model = d.fit(model, parameters)
+    # print(round(model.cv_results_['mean_test_score'][0], 7))
+    # print(model.cv_results_['mean_test_nmse'])
+    # print(model.cv_results_['mean_train_nmse'])
     predictions = d.predict(model)
     d.print_log()
-    return predictions
+    return (predictions, score)
 
 
 model = LogisticRegression
 parameters = {}
 cols_to_ignore = ['PassengerId', 'SibSp', 'Name', 'Parch',
-                  'Ticket', 'Cabin', 'Age', 'Embarked', 'Fare']
+                  'Ticket', 'Cabin', 'Age', 'Embarked', 'Fare',
+                  'AgeGroup', 'Sex', 'Title', 'Pclass']
 col_sum = [
     # ['Title', 'Pclass'],
 ]
@@ -498,6 +555,6 @@ d = Data('./input/train.csv',
          'Survived',
          ignore=cols_to_ignore,
          col_sum=col_sum)
-predictions = run(d, model, parameters)
-d.save_predictions(predictions)
+predictions, score = run(d, model, parameters)
+d.save_predictions(predictions, score)
 # 0.7845118
