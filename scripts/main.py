@@ -7,7 +7,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
+# import xgboost as xgb
+from sklearn.model_selection import StratifiedKFold
+# from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 import scipy.stats as stats
@@ -355,19 +357,17 @@ class Model:
             cls.mutate(cls.fix_shape)
             train = cls.get_df('train')
         scores = np.array([])
-        while x_val_times > 0:
-            train = cls.get_df('train')
-            X = train.drop(columns=[cls.target_col])
-            y = train[cls.target_col]
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.3,
-                random_state=(x_val_times ** 2))
+        skf = StratifiedKFold(n_splits=10, random_state=None)
+        X = train.drop(columns=[cls.target_col])
+        y = train[cls.target_col]
+        for train_index, test_index in skf.split(X, y):
+            X_train, X_test = X.iloc[train_index], X.iloc[test_index] 
+            y_train, y_test = y.iloc[train_index], y.iloc[test_index]
             cv_model = model(**parameters)
             cv_model.fit(X_train, y_train)
             X_predictions = cv_model.predict(X_test)
             score = accuracy_score(y_test, X_predictions)
             scores = np.append(scores, score)
-            x_val_times -= 1
         score = np.round(scores.mean(), decimals=5)
         return score
 
@@ -527,7 +527,7 @@ def run(d, model, parameters):
     # mutate(d.sum_features, d.col_sum)
     mutate(d.combine, d.col_sum)
     # print(d.get_df('train').head())
-    mutate(d.encode_categorical, ['Title', 'Pclass', 'FamilySize', 'AgeGroup'])
+    mutate(d.encode_categorical, ['Title__Pclass', 'FamilySize'])
     mutate(d.drop_ignore)
     mutate(d.fill_na)
     score = d.cross_validate(model, parameters)
@@ -538,6 +538,7 @@ def run(d, model, parameters):
     # print(model.cv_results_['mean_train_nmse'])
     predictions = d.predict(model)
     d.print_log()
+    print(d.get_df('train').columns)
     return (predictions, score)
 
 
@@ -547,7 +548,7 @@ cols_to_ignore = ['PassengerId', 'SibSp', 'Name', 'Parch',
                   'Ticket', 'Cabin', 'Age', 'Embarked', 'Fare',
                   'AgeGroup', 'Sex', 'Title', 'Pclass']
 col_sum = [
-    # ['Title', 'Pclass'],
+    ['Title', 'Pclass'],
 ]
 
 d = Data('./input/train.csv',
@@ -557,4 +558,4 @@ d = Data('./input/train.csv',
          col_sum=col_sum)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score)
-# 0.7845118
+# 0.83387 (0.78947 on pl)
