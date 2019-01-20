@@ -204,6 +204,21 @@ class Clean:
 
 class Engineer:
 
+    def group_fare(cls, x):
+        if x > 200:
+            return 'Very_High'
+        if x > 14:
+            return 'High'
+        if x > 8:
+            return 'Medium'
+        if x == 0:
+            return 'Unknown'
+        return 'Low'
+
+    def fare(cls, df):
+        df['Fare'] = df['Fare'].apply(lambda x: cls.group_fare(x))
+        return df
+
     def pclass(cls, df):
         df['Pclass'] = df['Pclass'].apply(lambda x: str('_' + str(x)))
         return df
@@ -524,10 +539,11 @@ def run(d, model, parameters):
     mutate(d.age_group, 15)
     mutate(d.family)
     mutate(d.pclass)
+    mutate(d.fare)
     # mutate(d.sum_features, d.col_sum)
     mutate(d.combine, d.col_sum)
     # print(d.get_df('train').head())
-    mutate(d.encode_categorical, ['Title__Pclass', 'FamilySize'])
+    mutate(d.encode_categorical, ['Title__Pclass', 'FamilySize', 'Fare'])
     mutate(d.drop_ignore)
     mutate(d.fill_na)
     score = d.cross_validate(model, parameters)
@@ -538,7 +554,11 @@ def run(d, model, parameters):
     # print(model.cv_results_['mean_train_nmse'])
     predictions = d.predict(model)
     d.print_log()
-    print(d.get_df('train').columns)
+    train = d.get_df('train')
+    print(train.columns)
+    for col in train.columns.values:
+        print('################')
+        print(train[col].value_counts())
     return (predictions, score)
 
 
@@ -558,4 +578,4 @@ d = Data('./input/train.csv',
          col_sum=col_sum)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score)
-# 0.83387 (0.78947 on pl)
+# 0.83499 (0.77990 on LB)
