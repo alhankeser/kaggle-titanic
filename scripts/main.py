@@ -7,6 +7,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
 # import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold
 # from sklearn.model_selection import train_test_split
@@ -203,6 +205,45 @@ class Clean:
 
 
 class Engineer:
+
+    def encode_features(cls, df, cols):
+        train, test = cls.get_dfs()
+        df_combined = pd.concat([train[cols], test[cols]])
+        train.drop(cls.target_col, axis=1, inplace=True)
+        for feature in cols:
+            le = LabelEncoder()
+            df_combined[feature] = df_combined[feature].apply(lambda x: str(x))
+            df[feature] = df[feature].apply(lambda x: str(x))
+            le = le.fit(df_combined[feature])
+            df[feature] = le.transform(df[feature])
+        return df
+
+    def simplify_ages(cls, df):
+        df['Age'] = df['Age'].fillna(-0.5)
+        bins = (-1, 0, 5, 12, 18, 25, 35, 60, 120)
+        group_names = ['Unknown', 'Baby', 'Child', 'Teenager', 'Student',
+                       'Young Adult', 'Adult', 'Senior']
+        categories = pd.cut(df['Age'], bins, labels=group_names)
+        df['Age'] = categories
+        return df
+
+    def simplify_cabin(cls, df):
+        df['Cabin'] = df['Cabin'].fillna('N')
+        df['Cabin'] = df['Cabin'].apply(lambda x: x[0])
+        return df
+
+    def simplify_fare(cls, df):
+        df['Fare'] = df['Fare'].fillna(-0.5)
+        bins = (-1, 0, 8, 15, 31, 1000)
+        group_names = ['Unknown', '1_quartile', '2_quartile',
+                       '3_quartile', '4_quartile']
+        categories = pd.cut(df['Fare'], bins, labels=group_names)
+        df['Fare'] = categories
+        return df
+
+    def get_lastname(cls, df):
+        df['LastName'] = df['Name'].apply(lambda x: x.split(' ')[0])
+        return df
 
     def group_fare(cls, x):
         if x > 200:
@@ -534,18 +575,33 @@ class Data(Explore, Clean, Engineer, Model):
 
 def run(d, model, parameters):
     mutate = d.mutate
+
+    train = d.get_df('train')
+
     mutate(d.title)
     mutate(d.impute_age)
-    mutate(d.age_group, 15)
+    mutate(d.simplify_ages)
+    mutate(d.simplify_cabin)
+    mutate(d.simplify_fare)
+    mutate(d.get_lastname)
+    # mutate(d.age_group, 15)
     mutate(d.family)
-    mutate(d.pclass)
-    mutate(d.fare)
+    # mutate(d.pclass)
+    # mutate(d.fare)
     # mutate(d.sum_features, d.col_sum)
-    mutate(d.combine, d.col_sum)
+    # mutate(d.combine, d.col_sum)
     # print(d.get_df('train').head())
-    mutate(d.encode_categorical, ['Title__Pclass', 'FamilySize', 'Fare'])
-    mutate(d.drop_ignore)
+    # mutate(d.encode_categorical, ['Title__Pclass', 'FamilySize', 'Fare'])
+    # mutate(d.encode_categorical, ['Pclass', 'Sex', 'Age', 'Cabin',
+    #                               'Fare', 'LastName'])
+    
+    # print(d.get_df('train').head())
     mutate(d.fill_na)
+    mutate(d.encode_features, ['Fare', 'Cabin', 'Age',
+                               'Sex', 'LastName', 'Title',
+                               'FamilySize'])
+    # print(d.get_df('train').head())
+    mutate(d.drop_ignore)
     score = d.cross_validate(model, parameters)
     print(score)
     model = d.fit(model, parameters)
@@ -555,18 +611,32 @@ def run(d, model, parameters):
     predictions = d.predict(model)
     d.print_log()
     train = d.get_df('train')
-    print(train.columns)
-    for col in train.columns.values:
-        print('################')
-        print(train[col].value_counts())
+    print(train.columns.values)
+    # for col in train.columns.values:
+    #     print('################')
+    #     print(train[col].value_counts())
     return (predictions, score)
 
 
-model = LogisticRegression
-parameters = {}
+# model = LogisticRegression
+# parameters = {}
+
+model = RandomForestClassifier
+parameters = {
+    'bootstrap': True, 'class_weight': None, 'criterion': 'entropy',
+    'max_depth': 5, 'max_features': 'log2', 'max_leaf_nodes': None,
+    'min_impurity_decrease': 0.0, 'min_impurity_split': None,
+    'min_samples_leaf': 5, 'min_samples_split': 3,
+    'min_weight_fraction_leaf': 0.0, 'n_estimators': 9, 'n_jobs': None,
+    'oob_score': False, 'random_state': None, 'verbose': 0,
+    'warm_start': False
+}
+
+
+
 cols_to_ignore = ['PassengerId', 'SibSp', 'Name', 'Parch',
-                  'Ticket', 'Cabin', 'Age', 'Embarked', 'Fare',
-                  'AgeGroup', 'Sex', 'Title', 'Pclass']
+                  'Ticket', 'Embarked',
+                  ]
 col_sum = [
     ['Title', 'Pclass'],
 ]
@@ -578,4 +648,4 @@ d = Data('./input/train.csv',
          col_sum=col_sum)
 predictions, score = run(d, model, parameters)
 d.save_predictions(predictions, score)
-# 0.83499 (0.77990 on LB)
+# 0.78895
